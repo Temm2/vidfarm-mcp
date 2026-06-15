@@ -7,7 +7,7 @@ from starlette.responses import JSONResponse
 K = os.environ.get("VIDFARM_API_KEY", "vf_key_fbdd8e706a5f49ae8adf2505576e42f2")
 B = "https://vidfarm.cc/api/v1"
 H = {"vidfarm-api-key": K, "content-type": "application/json", "accept": "application/json"}
-PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://your-app.railway.app")
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://vidfarm-mcp-production.up.railway.app")
 
 mcp = FastMCP(name="vidfarm-bridge")
 
@@ -59,7 +59,7 @@ async def vidfarm_get_job_logs(job_id: str) -> str:
 
 @mcp.tool()
 async def vidfarm_approve_post(caption: str, title: str, media_json: str = "[]", tracer: str = "claude-mindnote") -> str:
-    """Package a finished post as an approved VidFarm post. media_json: [{url, kind, role}]"""
+    """Package a finished post as an approved VidFarm post."""
     try: media = json.loads(media_json)
     except Exception as e: return json.dumps({"error": str(e)})
     return await vfp("/approved/posts", {"tracer": tracer, "caption": caption, "title": title, "media": media})
@@ -68,11 +68,6 @@ async def vidfarm_approve_post(caption: str, title: str, media_json: str = "[]",
 async def vidfarm_list_approved_posts(tracer: str = "") -> str:
     """List approved VidFarm posts."""
     return await vfg("/approved/posts", {"tracer": tracer} if tracer else {})
-
-@mcp.tool()
-async def vidfarm_get_schedules(post_id: str) -> str:
-    """Get schedules for an approved post."""
-    return await vfg(f"/approved/posts/{post_id}/schedules")
 
 @mcp.tool()
 async def vidfarm_schedule_post(post_id: str, destination_id: str, scheduled_at: str, destination_type: str = "flockposter", timezone: str = "America/New_York") -> str:
@@ -89,7 +84,7 @@ async def opr(r): return JSONResponse({"resource": PUBLIC_URL, "authorization_se
 async def oas(r): return JSONResponse({"issuer": PUBLIC_URL, "token_endpoint": f"{PUBLIC_URL}/token", "response_types_supported": ["token"]})
 async def reg(r): return JSONResponse({"client_id": "claude-mcp-client", "client_secret": "none", "grant_types": [], "token_endpoint_auth_method": "none"}, status_code=201)
 async def tok(r): return JSONResponse({"access_token": "no-auth-required", "token_type": "bearer", "expires_in": 86400})
-async def health(r): return JSONResponse({"status": "ok", "version": "v5-railway"})
+async def health(r): return JSONResponse({"status": "ok", "version": "v6"})
 
 mcp_app = mcp.sse_app()
 app = Starlette(routes=[
@@ -104,5 +99,12 @@ app = Starlette(routes=[
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"VidFarm MCP v5 running on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    print(f"VidFarm MCP v6 running on port {port}")
+    # proxy_headers=True + forwarded_allow_ips fixes Railway's reverse proxy
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*"
+    )
