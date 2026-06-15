@@ -2,14 +2,19 @@ import json, httpx, uvicorn, os
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
+from starlette.requests import Request
 
 K = os.environ.get("VIDFARM_API_KEY", "vf_key_fbdd8e706a5f49ae8adf2505576e42f2")
 B = "https://vidfarm.cc/api/v1"
 H = {"vidfarm-api-key": K, "content-type": "application/json", "accept": "application/json"}
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://vidfarm-mcp-production.up.railway.app")
 
-mcp = FastMCP(name="vidfarm-bridge")
+mcp = FastMCP(
+    name="vidfarm-bridge",
+    # Allow any host — fixes Railway proxy host validation
+    host="0.0.0.0",
+)
 
 async def vfg(u, q=None):
     async with httpx.AsyncClient(timeout=30) as c:
@@ -79,14 +84,34 @@ async def vidfarm_schedule_post(post_id: str, destination_id: str, scheduled_at:
         "timezone": timezone
     })
 
-# OAuth 2.0 discovery endpoints required by Claude MCP client
+# OAuth 2.0 discovery endpoints
 async def opr(r): return JSONResponse({"resource": PUBLIC_URL, "authorization_servers": [], "bearer_methods_supported": ["header"]})
 async def oas(r): return JSONResponse({"issuer": PUBLIC_URL, "token_endpoint": f"{PUBLIC_URL}/token", "response_types_supported": ["token"]})
 async def reg(r): return JSONResponse({"client_id": "claude-mcp-client", "client_secret": "none", "grant_types": [], "token_endpoint_auth_method": "none"}, status_code=201)
 async def tok(r): return JSONResponse({"access_token": "no-auth-required", "token_type": "bearer", "expires_in": 86400})
-async def health(r): return JSONResponse({"status": "ok", "version": "v6"})
+async def health(r): return JSONResponse({"status": "ok", "version": "v7"})
+
+# Middleware to strip/fix Host header before it reaches FastMCP
+class HostFixMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            # Replace host header with the actual public hostname
+            hostname = PUBLIC_URL.replace("https://", "").replace("http://", "")
+            headers = []
+            for name, value in scope.get("headers", []):
+                if name == b"host":
+                    headers.append((b"host", hostname.encode()))
+                else:
+                    headers.append((name, value))
+            scope["headers"] = headers
+        await self.app(scope, receive, send)
 
 mcp_app = mcp.sse_app()
+mcp_app_fixed = HostFixMiddleware(mcp_app)
+
 app = Starlette(routes=[
     Route("/.well-known/oauth-protected-resource", opr),
     Route("/.well-known/oauth-protected-resource/sse", opr),
@@ -94,13 +119,12 @@ app = Starlette(routes=[
     Route("/register", reg, methods=["POST"]),
     Route("/token", tok, methods=["POST"]),
     Route("/health", health),
-    Mount("/", app=mcp_app),
+    Mount("/", app=mcp_app_fixed),
 ])
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"VidFarm MCP v6 running on port {port}")
-    # proxy_headers=True + forwarded_allow_ips fixes Railway's reverse proxy
+    print(f"VidFarm MCP v7 running on port {port}")
     uvicorn.run(
         app,
         host="0.0.0.0",
